@@ -10,7 +10,7 @@ Automate trading on the Backpack Exchange using API and JavaScript.
 
 ## Setup Guide
 
-1. **Create an Account**: [Backpack Exchange](https://backpack.exchange/refer/15pgbk1r)
+1. **Create an Account**: [Backpack Exchange](https://backpack.exchange/refer/15pgbk1r) (KYC and enable 2FA is require to trade)
 2. **Download the Code**: [GitHub Repository]
 3. **Generate API Key**: [Backpack Exchange API Keys](https://backpack.exchange/settings/api-keys)
 4. **Install Node.js**: [Installation Guide](https://www.geeksforgeeks.org/installation-of-node-js-on-windows) (Version >= v18.16.0)
@@ -39,6 +39,7 @@ const workerData = {
       Backpack_API_KEY: "YOUR_KEY",
       proxy: "PROXY_URL",
     },
+   ... add more account 
   ],
 };
 ```
