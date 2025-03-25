@@ -2,6 +2,7 @@ import got, { Response } from "got";
 import crypto from "crypto";
 import qs from "qs";
 import WebSocket from "ws";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
 const BACKOFF_EXPONENT = 1.5;
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -161,7 +162,6 @@ export class BackpackClient {
 
     if (proxy) {
       // Dynamically require the https-proxy-agent package
-      const { HttpsProxyAgent } = require("https-proxy-agent");
       if (!proxy.startsWith("http://") && !proxy.startsWith("https://")) {
         proxy = "http://" + proxy;
       }
@@ -227,8 +227,7 @@ export class BackpackClient {
    * @returns The response object.
    */
   async publicMethod(instruction: string, params: Record<string, any> = {}): Promise<any> {
-    const response = await rawRequest(instruction, {}, params);
-    return response;
+    return await rawRequest(instruction, {}, params);
   }
 
   /**
@@ -248,12 +247,11 @@ export class BackpackClient {
       "X-API-Key": this.config.publicKey,
       "X-Signature": signature,
     };
-    const response = await rawRequest(instruction, headers, params, {
+    return await rawRequest(instruction, headers, params, {
       agent: {
         http: this.agent,
       },
     });
-    return response;
   }
 
   // API methods

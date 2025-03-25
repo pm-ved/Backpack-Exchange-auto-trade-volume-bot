@@ -3,7 +3,7 @@ import { BackpackClient } from "./client.js";
 import dotenv from "dotenv";
 
 dotenv.config();
-import { isMainThread, workerData } from "worker_threads";
+import { isMainThread, workerData, parentPort } from "worker_threads";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const getNowFormatDate = () => new Date().toISOString().replace("T", " ").split(".")[0];
@@ -113,7 +113,7 @@ const buyFun = async (client: BackpackClient) => {
   }
 };
 
-async function main(account?: any) {
+async function main(account?: { Backpack_API_KEY: string; Backpack_API_SECRET: string; proxy?: string | string[] }) {
   let client: BackpackClient;
   if (account) {
     if (Array.isArray(account.proxy)) account.proxy = account.proxy[0];
@@ -133,8 +133,25 @@ async function main(account?: any) {
 
 if (isMainThread) {
   main();
-} else {
+} else if (parentPort) {
+  if (!workerData.account || workerData.account.length == 0) {
+    console.error('No accounts found. Please provide "account" in workerData.');
+    process.exit(1);
+  }
+  parentPort.on("message", async (msg) => {
+    if (msg.task == "close-all") process.exit();
+  });
+
+  console.log = (...args) => parentPort?.postMessage({ type: "log", message: JSON.stringify(args) });
+  console.error = (...args) => parentPort?.postMessage({ type: "error", message: JSON.stringify(args) });
+  console.warn = (...args) => parentPort?.postMessage({ type: "warn", message: JSON.stringify(args) });
+  console.debug = (...args) => parentPort?.postMessage({ type: "debug", message: JSON.stringify(args) });
+
   for (const account of workerData.account) {
-    main(account);
+    main(account)
+      .then(() => {
+        console.log("Done");
+      })
+      .catch((e) => console.error(e));
   }
 }

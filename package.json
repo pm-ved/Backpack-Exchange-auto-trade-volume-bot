@@ -3,6 +3,10 @@
   "version": "1",
   "description": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pm-ved/Backpack-Exchange-auto-trade-volume-bot.git"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node main"
@@ -12,6 +16,7 @@
     "dotenv": "^16.4.7",
     "got": "^11.8.2",
     "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
     "qs": "^6.11.2",
     "ws": "^8.16.0"
   },

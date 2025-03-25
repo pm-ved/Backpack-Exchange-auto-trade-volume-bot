@@ -1,1 +1,1 @@
-import index from "./lib/src/index.js";
+import * as _ from "./lib/index.js";
