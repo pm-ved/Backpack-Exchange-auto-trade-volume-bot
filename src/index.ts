@@ -1,123 +1,222 @@
 "use strict";
 import { BackpackClient } from "./client.js";
-import dotenv from "dotenv";
 
-dotenv.config();
 import { isMainThread, workerData, parentPort } from "worker_threads";
+import dotenv from "dotenv";
+import { log, delay, sleepToNextDate } from "./utils.js";
+import { Account } from "./types.js"; // Ensure the file 'types.ts' exists in the same directory
+dotenv.config();
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const getNowFormatDate = () => new Date().toISOString().replace("T", " ").split(".")[0];
 
-let successBuy = 0;
-let sellBuy = 0;
 
-const init = async (client: BackpackClient) => {
-  while (true) {
-    try {
-      console.log("\n============================");
-      console.log(`Total Buy: ${successBuy} | Total Sell: ${sellBuy}`);
-      console.log("============================\n");
+class TradeClient {
+  client: BackpackClient;
+  private maxVolumeDaily: number = 2000;
+  private tradePair: string = "SOL_USDC_PERP";
+  private tradeAmount: number = 80;
+  successBuy: number;
+  sellBuy: number;
+  constructor(account: Account) {
+    let proxy: string | undefined = undefined;
+    if (typeof account.proxy === "string") {
+      proxy = account.proxy;
+    } else if (Array.isArray(account.proxy)) {
+      proxy = account.proxy[Math.floor(Math.random() * account.proxy.length)];
+    }
+    this.client = new BackpackClient(account.Backpack_API_SECRET, account.Backpack_API_KEY, proxy);
+    if (account.maxVolumeDaily) this.maxVolumeDaily = account.maxVolumeDaily;
+    if (account.tradePair) this.tradePair = account.tradePair;
+    this.successBuy = 0;
+    this.sellBuy = 0;
+    this.tradeAmount = account.tradeAmount || 10;
+  }
 
-      console.log(getNowFormatDate(), "Waiting 10 seconds...");
-      await delay(10000);
-
-      let userBalance = await client.Balance();
-      if (userBalance.USDC.available > 5) {
-        await buyFun(client);
-      } else {
-        await sellFun(client);
-      }
-      return; // Exit if balance is low
-    } catch (e: any) {
-      console.log(getNowFormatDate(), `Try again... (${e.message})`);
-      console.log("=======================");
-      await delay(3000);
+  async cancelOders(symbol: string) {
+    const client = this.client;
+    let openOrders = await client.GetOpenOrders({ symbol });
+    if (openOrders.length > 0) {
+      await client.CancelOpenOrders({ symbol });
+      log("All pending orders canceled");
     }
   }
-};
 
-const sellFun = async (client: BackpackClient) => {
-  let openOrders = await client.GetOpenOrders({ symbol: "SOL_USDC" });
-  if (openOrders.length > 0) {
-    await client.CancelOpenOrders({ symbol: "SOL_USDC" });
-    console.log(getNowFormatDate(), "All pending orders canceled");
-  }
+  init = async () => {
+    const { maxVolumeDaily: maxVolume, tradePair: TRADE_PAIR, client } = this;
 
-  let userBalance = await client.Balance();
-  console.log(
-    getNowFormatDate(),
-    `Account Info: ${userBalance.SOL.available} SOL | ${userBalance.USDC.available} USDC`
-  );
+    if (TRADE_PAIR.includes("PERP")) return await this.initPerp();
 
-  let { lastPrice } = await client.Ticker({ symbol: "SOL_USDC" });
-  console.log(getNowFormatDate(), "SOL/USDC Price:", lastPrice);
+    const sellFun = async (client: BackpackClient) => {
+      await this.cancelOders(TRADE_PAIR);
 
-  let quantity = (userBalance.SOL.available - 0.02).toFixed(2);
-  console.log(
-    getNowFormatDate(),
-    `Selling ${quantity} SOL for ${(Number(lastPrice) * Number(quantity)).toFixed(2)} USDC`
-  );
+      let userBalance = await client.Balance();
+      log(`Account Info: ${userBalance.SOL.available} SOL | ${userBalance.USDC.available} USDC`);
 
-  let orderResult = await client.ExecuteOrder({
-    orderType: "Limit",
-    price: lastPrice.toString(),
-    quantity: quantity.toString(),
-    side: "Ask",
-    symbol: "SOL_USDC",
-    timeInForce: "IOC",
-  });
+      let { lastPrice } = await client.Ticker({ symbol: TRADE_PAIR });
+      log("SOL/USDC Price:", lastPrice);
+      log(userBalance);
+      let quantity = (userBalance.SOL.available - 0.02).toFixed(2);
+      log(`Selling ${quantity} SOL for ${(Number(lastPrice) * Number(quantity)).toFixed(2)} USDC`);
 
-  if (orderResult?.status === "Filled" && orderResult?.side === "Ask") {
-    sellBuy += 1;
-    console.log(getNowFormatDate(), "Sold successfully:", `Order ID: ${orderResult.id}`);
-    init(client);
-  } else {
-    throw new Error(orderResult?.status || "Unknown error");
-  }
-};
+      let orderResult = await client.ExecuteOrder({
+        orderType: "Limit",
+        price: lastPrice.toString(),
+        quantity: quantity.toString(),
+        side: "Ask",
+        symbol: TRADE_PAIR,
+        timeInForce: "IOC",
+      });
 
-const buyFun = async (client: BackpackClient) => {
-  let openOrders = await client.GetOpenOrders({ symbol: "SOL_USDC" });
-  if (openOrders.length > 0) {
-    await client.CancelOpenOrders({ symbol: "SOL_USDC" });
-    console.log(getNowFormatDate(), "All pending orders canceled");
-  }
+      if (orderResult?.status === "Filled" && orderResult?.side === "Ask") {
+        this.sellBuy += 1;
+        log("Sold successfully:", `Order ID: ${orderResult.id}`);
+        this.init();
+      } else {
+        throw new Error(orderResult?.status || "Unknown error");
+      }
+    };
 
-  let userBalance = await client.Balance();
-  console.log(
-    getNowFormatDate(),
-    `Account Info: ${userBalance.SOL?.available ?? 0} SOL | ${userBalance.USDC.available} USDC`
-  );
+    const buyFun = async (client: BackpackClient) => {
+      await this.cancelOders(TRADE_PAIR);
 
-  let { lastPrice } = await client.Ticker({ symbol: "SOL_USDC" });
-  console.log(getNowFormatDate(), "SOL/USDC Price:", lastPrice);
+      const userBalance = await client.Balance();
+      log(`Account Info: ${userBalance.SOL?.available ?? 0} SOL | ${userBalance.USDC.available} USDC`);
 
-  let quantity = ((userBalance.USDC.available - 2) / lastPrice).toFixed(2);
-  console.log(getNowFormatDate(), `Buying ${quantity} SOL for ${(userBalance.USDC.available - 2).toFixed(2)} USDC`);
+      const { lastPrice } = await client.Ticker({ symbol: TRADE_PAIR });
+      log("SOL/USDC Price:", lastPrice);
+      let tradeAmt = this.tradeAmount;
+      if (userBalance.USDC.available - 2 < this.tradeAmount) {
+        tradeAmt = userBalance.USDC.available - 2;
+      }
+      if (tradeAmt < 5) {
+        tradeAmt = 5.1;
+      }
+      const quantity = (tradeAmt / lastPrice).toFixed(2);
+      log(`Buying ${quantity} SOL for ${(userBalance.USDC.available - 2).toFixed(2)} USDC`);
 
-  let orderResult = await client.ExecuteOrder({
-    orderType: "Limit",
-    price: lastPrice.toString(),
-    quantity: quantity.toString(),
-    side: "Bid",
-    symbol: "SOL_USDC",
-    timeInForce: "IOC",
-  });
+      const orderResult = await client.ExecuteOrder({
+        orderType: "Limit",
+        price: lastPrice.toString(),
+        quantity: quantity.toString(),
+        side: "Bid",
+        symbol: TRADE_PAIR,
+        timeInForce: "IOC",
+      });
 
-  if (orderResult?.status === "Filled" && orderResult?.side === "Bid") {
-    successBuy += 1;
-    console.log(getNowFormatDate(), "Bought successfully:", `Order ID: ${orderResult.id}`);
-    init(client);
-  } else {
-    throw new Error(orderResult?.status || "Unknown error");
-  }
-};
+      if (orderResult?.status === "Filled" && orderResult?.side === "Bid") {
+        this.successBuy += 1;
+        log("Bought successfully:", `Order ID: ${orderResult.id}`);
+        this.init();
+      } else {
+        throw new Error(orderResult?.status || "Unknown error");
+      }
+    };
 
-async function main(account?: { Backpack_API_KEY: string; Backpack_API_SECRET: string; proxy?: string | string[] }) {
-  let client: BackpackClient;
+    while (true) {
+      try {
+        if ((await client.getVolume()) > maxVolume) {
+          log("Volume reached. Close position. wait for next day");
+          await sleepToNextDate(0, 0);
+          continue;
+        }
+
+        log(`Total Buy: ${this.successBuy} | Total Sell: ${this.sellBuy}`);
+        await delay(10000);
+
+        let userBalance = await client.Balance();
+        if (userBalance.USDC.available > 5) await buyFun(client);
+        else await sellFun(client);
+      } catch (e: any) {
+        log(`Try again... (${e.message})`);
+        await delay(3000);
+      }
+    }
+  };
+
+  initPerp = async () => {
+    const { maxVolumeDaily: maxVolume, tradePair: TRADE_PAIR, client } = this;
+
+    const closePosition = async (client: BackpackClient) => {
+      await this.cancelOders(TRADE_PAIR);
+      const positions = await client.Position();
+
+      for (const position of positions) {
+        let orderResult = await client.ExecuteOrder({
+          orderType: "Market",
+          quantity: position.netQuantity.toString(),
+          reduceOnly: true,
+          side: "Ask",
+          symbol: TRADE_PAIR,
+        });
+
+        if (orderResult?.status === "Filled" && orderResult?.side === "Ask") {
+          this.sellBuy += 1;
+          log("Sold successfully:", `Order ID: ${orderResult.id}`);
+        } else {
+          throw new Error(orderResult?.status || "Unknown error");
+        }
+      }
+    };
+
+    const buyFun = async (client: BackpackClient) => {
+      await this.cancelOders(TRADE_PAIR);
+
+      const userBalance = await client.Balance();
+      log(`Account Info: ${userBalance.SOL?.available ?? 0} SOL | ${userBalance.USDC.available} USDC`);
+
+      let { lastPrice } = await client.Ticker({ symbol: TRADE_PAIR });
+      log("SOL/USDC Price:", lastPrice);
+      if (userBalance.USDC.available < 5) {
+        log("Insufficient balance. wait for next day");
+        await sleepToNextDate(0, 0);
+        return;
+      }
+      let usdcAmt = userBalance.USDC.available - 2;
+      if (usdcAmt < 5) usdcAmt = 5.1;
+      if (usdcAmt > this.tradeAmount) usdcAmt = this.tradeAmount;
+
+      const quantity = (usdcAmt / lastPrice).toFixed(2);
+
+      log(`Buying ${quantity} SOL for ${usdcAmt} USDC`);
+
+      const orderResult = await client.ExecuteOrder({
+        orderType: "Limit",
+        price: lastPrice.toString(),
+        quantity: quantity.toString(),
+        side: "Bid",
+        symbol: TRADE_PAIR,
+        timeInForce: "IOC",
+      });
+
+      if (orderResult?.status === "Filled" && orderResult?.side === "Bid") {
+        this.successBuy += 1;
+        log("Bought successfully:", `Order ID: ${orderResult.id}`);
+      } else {
+        throw new Error(orderResult?.status || "Unknown error");
+      }
+    };
+    while (true) {
+      if ((await client.getVolume()) > maxVolume) {
+        await closePosition(client);
+        log("Volume reached. Close position. wait for next day");
+        await sleepToNextDate(0, 0);
+        continue;
+      }
+      try {
+        await closePosition(client);
+        await buyFun(client);
+        await delay(5000);
+      } catch (e: any) {
+        log(`Try again... (${e.message})`);
+        await delay(3000);
+      }
+    }
+  };
+}
+
+async function main(account?: Account) {
+  let client: TradeClient;
   if (account) {
-    if (Array.isArray(account.proxy)) account.proxy = account.proxy[0];
-    client = new BackpackClient(account.Backpack_API_SECRET, account.Backpack_API_KEY, account.proxy);
+    client = new TradeClient(account);
   } else {
     const API_KEY = process.env.API_KEY;
     const API_SECRET = process.env.API_SECRET;
@@ -126,9 +225,16 @@ async function main(account?: { Backpack_API_KEY: string; Backpack_API_SECRET: s
       console.error("Missing API credentials. Set API_KEY and API_SECRET.");
       process.exit(1);
     }
-    client = new BackpackClient(API_SECRET, API_KEY, process.env.PROXY_URL);
+    client = new TradeClient({
+      Backpack_API_KEY: API_KEY,
+      Backpack_API_SECRET: API_SECRET,
+      proxy: process.env.PROXY,
+      maxVolumeDaily: Number(process.env.MAX_VOLUME),
+      tradePair: process.env.TRADE_PAIR,
+    });
   }
-  await init(client);
+
+  await client.init();
 }
 
 if (isMainThread) {
@@ -148,9 +254,10 @@ if (isMainThread) {
   console.debug = (...args) => parentPort?.postMessage({ type: "debug", message: JSON.stringify(args) });
 
   for (const account of workerData.account) {
+    console.log("Starting account:", account);
     main(account)
       .then(() => {
-        console.log("Done");
+        log("Done");
       })
       .catch((e) => console.error(e));
   }

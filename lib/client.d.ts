@@ -50,10 +50,12 @@ export declare class BackpackClient {
     Time(): Promise<any>;
     RecentTrades(params: Record<string, any>): Promise<any>;
     HistoricalTrades(params: Record<string, any>): Promise<any>;
+    Position(): Promise<any>;
     /**
      * Connects to the Backpack Websocket for order updates.
      *
      * @returns WebSocket instance connected to the order update stream.
      */
     subscribeOrderUpdate(): WebSocket;
+    getVolume(from?: number): Promise<number>;
 }

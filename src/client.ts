@@ -3,6 +3,7 @@ import crypto from "crypto";
 import qs from "qs";
 import WebSocket from "ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { currentDateOnlyTimestamp } from "./utils.js";
 
 const BACKOFF_EXPONENT = 1.5;
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -43,6 +44,7 @@ const instructions: {
     ["orderQueryAll", { url: `${BASE_URL}api/v1/orders`, method: "GET" }],
     ["withdraw", { url: `${BASE_URL}wapi/v1/capital/withdrawals`, method: "POST" }],
     ["withdrawalQueryAll", { url: `${BASE_URL}wapi/v1/capital/withdrawals`, method: "GET" }],
+    ["positionQuery", { url: `${BASE_URL}api/v1/position`, method: "GET" }],
   ]),
 };
 
@@ -345,6 +347,10 @@ export class BackpackClient {
     return this.api("tradesHistory", params);
   }
 
+  async Position(): Promise<any> {
+    return this.api("positionQuery", {});
+  }
+
   /**
    * Connects to the Backpack Websocket for order updates.
    *
@@ -364,9 +370,17 @@ export class BackpackClient {
       console.log("Connected to BPX Websocket");
       privateStream.send(JSON.stringify(subscriptionData));
     };
-    privateStream.onerror = (error) => {
-      console.log(`Websocket Error ${error}`);
-    };
+    privateStream.onerror = (error) => console.log(`Websocket Error ${error}`);
+
     return privateStream;
+  }
+
+  async getVolume(from: number = currentDateOnlyTimestamp()): Promise<number> {
+    let currentVolume = 0;
+    const historys = await this.FillHistory({ from });
+    for (const history of historys) {
+      currentVolume += Number(history.quantity) * Number(history.price);
+    }
+    return currentVolume;
   }
 }
