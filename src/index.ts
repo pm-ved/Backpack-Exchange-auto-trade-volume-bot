@@ -7,8 +7,6 @@ import { log, delay, sleepToNextDate } from "./utils.js";
 import { Account } from "./types.js"; // Ensure the file 'types.ts' exists in the same directory
 dotenv.config();
 
-
-
 class TradeClient {
   client: BackpackClient;
   private maxVolumeDaily: number = 2000;
@@ -16,6 +14,8 @@ class TradeClient {
   private tradeAmount: number = 80;
   successBuy: number;
   sellBuy: number;
+  __currentVolume: number = 0;
+  private __loadedVolume: number | boolean = false;
   constructor(account: Account) {
     let proxy: string | undefined = undefined;
     if (typeof account.proxy === "string") {
@@ -132,30 +132,45 @@ class TradeClient {
     }
   };
 
-  initPerp = async () => {
-    const { maxVolumeDaily: maxVolume, tradePair: TRADE_PAIR, client } = this;
+  async isReachedMaxVolume() {
+    const { maxVolumeDaily: maxVolume, client } = this;
+    if (!this.__loadedVolume) {
+      this.__loadedVolume = await client.getVolume();
+      this.__currentVolume = this.__loadedVolume;
+    }
 
-    const closePosition = async (client: BackpackClient) => {
-      await this.cancelOders(TRADE_PAIR);
-      const positions = await client.Position();
+    if (this.__currentVolume > maxVolume) {
+      log("Volume reached currentVolume=", this.__currentVolume, "maxVolume=", maxVolume);
+      return true;
+    }
 
-      for (const position of positions) {
-        let orderResult = await client.ExecuteOrder({
-          orderType: "Market",
-          quantity: position.netQuantity.toString(),
-          reduceOnly: true,
-          side: "Ask",
-          symbol: TRADE_PAIR,
-        });
+    return false;
+  }
+  closePosition = async () => {
+    const { tradePair: TRADE_PAIR, client } = this;
+    await this.cancelOders(TRADE_PAIR);
+    const positions = await client.Position();
 
-        if (orderResult?.status === "Filled" && orderResult?.side === "Ask") {
-          this.sellBuy += 1;
-          log("Sold successfully:", `Order ID: ${orderResult.id}`);
-        } else {
-          throw new Error(orderResult?.status || "Unknown error");
-        }
+    for (const position of positions) {
+      let orderResult = await client.ExecuteOrder({
+        orderType: "Market",
+        quantity: position.netQuantity.toString(),
+        reduceOnly: true,
+        side: "Ask",
+        symbol: TRADE_PAIR,
+      });
+
+      if (orderResult?.status === "Filled" && orderResult?.side === "Ask") {
+        this.sellBuy += 1;
+        this.__currentVolume += position.netQuantity * position.entryPrice;
+        log("Sold successfully:", `Order ID: ${orderResult.id}`);
+      } else {
+        throw new Error(orderResult?.status || "Unknown error");
       }
-    };
+    }
+  };
+  initPerp = async () => {
+    const { tradePair: TRADE_PAIR, client } = this;
 
     const buyFun = async (client: BackpackClient) => {
       await this.cancelOders(TRADE_PAIR);
@@ -189,20 +204,23 @@ class TradeClient {
 
       if (orderResult?.status === "Filled" && orderResult?.side === "Bid") {
         this.successBuy += 1;
+        this.__currentVolume += usdcAmt;
         log("Bought successfully:", `Order ID: ${orderResult.id}`);
       } else {
         throw new Error(orderResult?.status || "Unknown error");
       }
     };
     while (true) {
-      if ((await client.getVolume()) > maxVolume) {
-        await closePosition(client);
-        log("Volume reached. Close position. wait for next day");
+      if (await this.isReachedMaxVolume()) {
+        await this.closePosition();
+        log("Close position. wait for next day");
         await sleepToNextDate(0, 0);
+        this.__currentVolume = 0;
+        this.__loadedVolume = false;
         continue;
       }
       try {
-        await closePosition(client);
+        await this.closePosition();
         await buyFun(client);
         await delay(5000);
       } catch (e: any) {
